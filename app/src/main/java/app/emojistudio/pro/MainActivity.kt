@@ -28,6 +28,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EmojiStudioApp() {
     var selectedTab by remember { mutableIntStateOf(0) }
