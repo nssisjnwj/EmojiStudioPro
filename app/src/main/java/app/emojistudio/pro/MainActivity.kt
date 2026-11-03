@@ -24,6 +24,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
+import org.json.JSONObject
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.airbnb.lottie.compose.*
@@ -148,6 +151,8 @@ fun EmojiStudioApp() {
     var playing by remember { mutableStateOf(true) }
     var showLanguages by remember { mutableStateOf(false) }
     var importing by remember { mutableStateOf(false) }
+    val templateStore = remember { TemplateStore(context) }
+    var templates by remember { mutableStateOf(templateStore.all()) }
 
     val t = translations[language] ?: translations.getValue("en")
 
@@ -298,12 +303,14 @@ fun EmojiStudioApp() {
                     NavigationBarItem(
                         selected = page == 2,
                         onClick = { page = 2 },
-                        icon = {
-                            Icon(Icons.Default.Settings, null)
-                        },
-                        label = {
-                            Text(t[2])
-                        }
+                        icon = { Icon(Icons.Default.Settings, null) },
+                        label = { Text(t[2]) }
+                    )
+                    NavigationBarItem(
+                        selected = page == 3,
+                        onClick = { templates = templateStore.all(); page = 3 },
+                        icon = { Icon(Icons.Default.CollectionsBookmark, null) },
+                        label = { Text("قالب‌ها") }
                     )
                 }
             }
@@ -346,6 +353,10 @@ fun EmojiStudioApp() {
                     onJsonChanged = { updated ->
                         animationJson = updated
                         prefs.edit().putString("last_json", updated).apply()
+                    },
+                    onSaveTemplate = { name, sourceName, json ->
+                        templateStore.save(name, sourceName, json)
+                        templates = templateStore.all()
                     }
                 )
 
@@ -353,8 +364,20 @@ fun EmojiStudioApp() {
                     modifier = Modifier.padding(padding),
                     t = t,
                     language = language,
-                    onShowLanguages = {
-                        showLanguages = true
+                    onShowLanguages = { showLanguages = true }
+                )
+                3 -> TemplatesPage(
+                    modifier = Modifier.padding(padding),
+                    templates = templates,
+                    onOpen = { item ->
+                        animationJson = item.json
+                        fileName = item.sourceName
+                        prefs.edit().putString("last_json", item.json).putString("last_name", item.sourceName).apply()
+                        page = 1
+                    },
+                    onDelete = { item ->
+                        templateStore.delete(item.id)
+                        templates = templateStore.all()
                     }
                 )
             }
@@ -508,20 +531,19 @@ fun EditorPage(
     playing: Boolean,
     onPlay: () -> Unit,
     onImport: () -> Unit,
-    onJsonChanged: (String) -> Unit
+    onJsonChanged: (String) -> Unit,
+    onSaveTemplate: (String, String, String) -> Unit
 ) {
     val context = LocalContext.current
     var documentJson by remember(json) { mutableStateOf(json) }
     val document = remember(documentJson) {
         documentJson?.let { runCatching { LottieDocument.parse(it) }.getOrNull() }
     }
-    var selectedPath by remember(documentJson) { mutableStateOf<String?>(null) }
-    var renameDialog by remember { mutableStateOf(false) }
-    var renameValue by remember { mutableStateOf("") }
     var refreshTree by remember { mutableIntStateOf(0) }
     val nodes = remember(documentJson, refreshTree) {
         document?.let { runCatching { it.layerTree() }.getOrDefault(emptyList()) } ?: emptyList()
     }
+    var selectedPath by remember(documentJson) { mutableStateOf(nodes.firstOrNull()?.path) }
     val selected = remember(nodes, selectedPath) {
         fun find(items: List<LottieLayerNode>): LottieLayerNode? {
             for (item in items) {
@@ -532,18 +554,28 @@ fun EditorPage(
         }
         find(nodes)
     }
+    var renameDialog by remember { mutableStateOf(false) }
+    var renameValue by remember { mutableStateOf("") }
+    var templateDialog by remember { mutableStateOf(false) }
+    var templateName by remember { mutableStateOf(fileName.substringBeforeLast('.').ifBlank { "قالب من" }) }
+    var textValue by remember(selectedPath, documentJson) {
+        mutableStateOf(selectedPath?.let { document?.readTextLayer(it) }.orEmpty())
+    }
+    var xValue by remember(selectedPath) { mutableStateOf("") }
+    var yValue by remember(selectedPath) { mutableStateOf("") }
+    var rotationValue by remember(selectedPath) { mutableStateOf("0") }
+    var scaleValue by remember(selectedPath) { mutableStateOf("100") }
 
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/gzip")
     ) { uri ->
         if (uri != null && document != null) {
             runCatching {
-                context.contentResolver.openOutputStream(uri)?.use {
-                    it.write(document.toTgsBytes())
-                } ?: error("Cannot create output file")
-                Toast.makeText(context, "TGS exported successfully", Toast.LENGTH_LONG).show()
+                context.contentResolver.openOutputStream(uri)?.use { it.write(document.toTgsBytes()) }
+                    ?: error("Cannot create output file")
+                Toast.makeText(context, "فایل TGS خروجی گرفته شد", Toast.LENGTH_LONG).show()
             }.onFailure {
-                Toast.makeText(context, "Export failed: ${it.message}", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "خطا در خروجی: ${it.message}", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -557,12 +589,11 @@ fun EditorPage(
             onJsonChanged(updated)
             refreshTree++
         }.onFailure {
-            Toast.makeText(context, it.message ?: "Edit failed", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, it.message ?: "ویرایش انجام نشد", Toast.LENGTH_LONG).show()
         }
     }
 
-    val spec = LottieCompositionSpec.JsonString(documentJson ?: EMPTY_JSON)
-    val composition by rememberLottieComposition(spec)
+    val composition by rememberLottieComposition(LottieCompositionSpec.JsonString(documentJson ?: EMPTY_JSON))
     val animatedProgress by animateLottieCompositionAsState(
         composition = composition,
         iterations = LottieConstants.IterateForever,
@@ -570,133 +601,164 @@ fun EditorPage(
     )
 
     Column(
-        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(t[1], style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text("ویرایشگر حرفه‌ای", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
                 Text(fileName, color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
             }
-            IconButton(onClick = onImport) {
-                Icon(Icons.Default.FileOpen, contentDescription = "Import")
-            }
-            IconButton(
-                onClick = { exportLauncher.launch(fileName.substringBeforeLast('.') + ".tgs") },
-                enabled = document != null
-            ) {
-                Icon(Icons.Default.SaveAlt, contentDescription = "Export TGS", tint = Purple)
+            IconButton(onClick = onImport) { Icon(Icons.Default.FileOpen, contentDescription = "Import") }
+            IconButton(onClick = { exportLauncher.launch(fileName.substringBeforeLast('.') + ".tgs") }, enabled = document != null) {
+                Icon(Icons.Default.Download, contentDescription = "Export TGS", tint = Purple)
             }
         }
 
-        Box(
-            Modifier.fillMaxWidth().height(230.dp)
-                .background(Panel, RoundedCornerShape(18.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            if (documentJson != null) {
-                LottieAnimation(
-                    composition = composition,
-                    progress = { animatedProgress },
-                    modifier = Modifier.fillMaxSize().padding(12.dp)
-                )
-            } else {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Default.Animation, null, tint = Purple, modifier = Modifier.size(60.dp))
-                    Text(t[7])
-                }
-            }
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(t[14], color = Purple, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.weight(1f))
-            Button(onClick = onPlay, enabled = documentJson != null) {
-                Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, null)
-                Spacer(Modifier.width(5.dp))
-                Text(if (playing) t[9] else t[8])
-            }
-        }
-        Slider(value = animatedProgress, onValueChange = {}, enabled = false)
-
+        // Tools are deliberately placed before the preview, so the selected layer's actions are immediately visible.
         Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
-            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.fillMaxWidth().padding(13.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("لایه‌ها", fontWeight = FontWeight.Bold, color = Purple, modifier = Modifier.weight(1f))
-                    Text("${nodes.size}", color = Color.LightGray)
+                    Text("ابزارهای لایه انتخاب‌شده", color = Purple, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Text(selected?.type ?: "لایه‌ای انتخاب نشده", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
                 }
-                if (nodes.isEmpty()) {
-                    Text("فایلی با لایه قابل ویرایش وارد نشده است.", color = Color.LightGray)
-                } else {
-                    nodes.forEach { node ->
-                        LayerTreeRow(node, 0, selectedPath) { selectedPath = it }
-                    }
-                }
-            }
-        }
-
-        if (selected != null && document != null) {
-            Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
-                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                    Text("ویرایش لایه", color = Purple, fontWeight = FontWeight.Bold)
-                    Text(selected.name, fontWeight = FontWeight.SemiBold)
-                    Text(selected.type, color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                Text(selected?.name ?: "از پیش‌نمایش یا فهرست لایه‌ها یک مورد انتخاب کن", fontWeight = FontWeight.SemiBold)
+                if (selected != null && document != null) {
+                    Text(document.layerDescription(selected.path), color = Color.LightGray, style = MaterialTheme.typography.bodySmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = {
-                            renameValue = selected.name
-                            renameDialog = true
-                        }) {
-                            Icon(Icons.Default.DriveFileRenameOutline, null)
-                            Text("تغییر نام")
+                        OutlinedButton(onClick = { renameValue = selected.name; renameDialog = true }) {
+                            Icon(Icons.Default.DriveFileRenameOutline, null); Text("تغییر نام")
                         }
-                        OutlinedButton(onClick = {
-                            applyEdit { it.setLayerHidden(selected.path, !selected.hidden) }
-                        }) {
+                        OutlinedButton(onClick = { applyEdit { it.setLayerHidden(selected.path, !selected.hidden) } }) {
                             Icon(if (selected.hidden) Icons.Default.Visibility else Icons.Default.VisibilityOff, null)
                             Text(if (selected.hidden) "نمایش" else "مخفی")
                         }
                     }
-                    Text("رنگ لایه (برای Fillهای ثابت)", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        listOf(0xFFFF4D8D.toInt(), 0xFF9B5CFF.toInt(), 0xFF22D3EE.toInt(), 0xFF4ADE80.toInt(), 0xFFFFC857.toInt()).forEach { color ->
+                    if (selected.type == "Text") {
+                        OutlinedTextField(
+                            value = textValue,
+                            onValueChange = { textValue = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("متن داخل لایه") },
+                            placeholder = { Text("مثلاً ZYRO") },
+                            singleLine = true
+                        )
+                        Button(
+                            onClick = {
+                                applyEdit {
+                                    if (!it.setTextLayer(selected.path, textValue)) {
+                                        error("متن این لایه از نوع قابل ویرایش پشتیبانی نمی‌شود")
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Icon(Icons.Default.TextFields, null); Text("اعمال متن جدید") }
+                    }
+                    Text("رنگ لایه", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+                        listOf(0xFFFF4D8D.toInt(), 0xFF9B5CFF.toInt(), 0xFF22D3EE.toInt(), 0xFF4ADE80.toInt(), 0xFFFFC857.toInt(), 0xFFFFFFFF.toInt()).forEach { color ->
                             Surface(
                                 modifier = Modifier.size(34.dp),
                                 shape = RoundedCornerShape(50),
                                 color = Color(color),
                                 onClick = {
-                                    applyEdit { changed ->
-                                        val count = changed.setStaticFillColor(selected.path, color)
-                                        Toast.makeText(context, if (count > 0) "رنگ تغییر کرد" else "Fill ثابت پیدا نشد", Toast.LENGTH_SHORT).show()
+                                    applyEdit {
+                                        val changed = it.setStaticFillColor(selected.path, color)
+                                        if (changed == 0) Toast.makeText(context, "برای این لایه Fill ثابت پیدا نشد؛ ممکن است رنگ داخل Precomp یا متحرک باشد.", Toast.LENGTH_LONG).show()
                                     }
                                 }
                             ) {}
                         }
                     }
+                    Text("موقعیت و اندازه (برای مقادیر ثابت)", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedTextField(xValue, { xValue = it }, modifier = Modifier.weight(1f), label = { Text("X") }, singleLine = true)
+                        OutlinedTextField(yValue, { yValue = it }, modifier = Modifier.weight(1f), label = { Text("Y") }, singleLine = true)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedTextField(rotationValue, { rotationValue = it }, modifier = Modifier.weight(1f), label = { Text("چرخش °") }, singleLine = true)
+                        OutlinedTextField(scaleValue, { scaleValue = it }, modifier = Modifier.weight(1f), label = { Text("اندازه %") }, singleLine = true)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            applyEdit {
+                                it.setLayerTransform(
+                                    selected.path,
+                                    x = xValue.toDoubleOrNull(),
+                                    y = yValue.toDoubleOrNull(),
+                                    rotation = rotationValue.toDoubleOrNull(),
+                                    scalePercent = scaleValue.toDoubleOrNull()
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Icon(Icons.Default.Tune, null); Text("اعمال تغییرات موقعیت و اندازه") }
+                } else {
+                    Text("برای شروع یک فایل TGS یا JSON وارد کن.", color = Color.LightGray)
                 }
             }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = {
-                    applyEdit { it.addRectangle("New Rectangle", 0xFF9B5CFF.toInt()) }
-                },
-                enabled = document != null,
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(Icons.Default.AddBox, null)
-                Text("افزودن شکل")
+        Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+            Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("پیش‌نمایش زنده", color = Purple, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    IconButton(onClick = onPlay, enabled = documentJson != null) {
+                        Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, null)
+                    }
+                }
+                BoxWithConstraints(
+                    Modifier.fillMaxWidth().height(270.dp)
+                        .background(Color(0xFF101019), RoundedCornerShape(14.dp))
+                        .pointerInput(documentJson, nodes) {
+                            detectTapGestures { tap ->
+                                val nx = (tap.x / size.width).coerceIn(0f, 1f).toDouble()
+                                val ny = (tap.y / size.height).coerceIn(0f, 1f).toDouble()
+                                document?.nearestRootLayer(nx, ny)?.let { selectedPath = it }
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (documentJson != null) {
+                        LottieAnimation(
+                            composition = composition,
+                            progress = { animatedProgress },
+                            modifier = Modifier.fillMaxSize().padding(12.dp)
+                        )
+                    } else {
+                        Text("ابتدا یک فایل انیمیشن وارد کن", color = Color.LightGray)
+                    }
+                    Text(
+                        "برای انتخاب سریع روی بخش ایموجی بزن",
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(6.dp),
+                        color = Color.LightGray.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+                Slider(value = animatedProgress, onValueChange = {}, enabled = false)
+                Text("تایم‌لاین: پیش‌نمایش و پخش انیمیشن فعال است؛ جابه‌جایی فریم به فریم هنوز در دست توسعه است.", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
             }
-            OutlinedButton(
-                onClick = {
-                    documentJson?.let { onJsonChanged(it) }
-                    Toast.makeText(context, "پروژه ذخیره شد", Toast.LENGTH_SHORT).show()
-                },
-                enabled = document != null,
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(Icons.Default.Save, null)
-                Text("ذخیره پروژه")
+        }
+
+        Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+            Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("درخت لایه‌ها و پوشه‌ها", color = Purple, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Text("${nodes.size} لایه اصلی", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                }
+                if (nodes.isEmpty()) Text("لایه‌ای برای نمایش وجود ندارد.", color = Color.LightGray)
+                nodes.forEach { node -> LayerTreeRow(node, 0, selectedPath) { selectedPath = it } }
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { templateName = fileName.substringBeforeLast('.').ifBlank { "قالب من" }; templateDialog = true },
+                enabled = document != null, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Default.BookmarkAdd, null); Text("ذخیره در قالب‌های من")
+            }
+            OutlinedButton(onClick = { exportLauncher.launch(fileName.substringBeforeLast('.') + ".tgs") },
+                enabled = document != null, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Default.FileDownload, null); Text("خروجی TGS")
             }
         }
     }
@@ -705,23 +767,32 @@ fun EditorPage(
         AlertDialog(
             onDismissRequest = { renameDialog = false },
             title = { Text("تغییر نام لایه") },
+            text = { OutlinedTextField(renameValue, { renameValue = it }, singleLine = true, label = { Text("نام جدید") }) },
+            confirmButton = {
+                TextButton(onClick = { applyEdit { it.renameLayer(selected.path, renameValue) }; renameDialog = false }) { Text("ذخیره") }
+            },
+            dismissButton = { TextButton(onClick = { renameDialog = false }) { Text("انصراف") } }
+        )
+    }
+    if (templateDialog && documentJson != null) {
+        AlertDialog(
+            onDismissRequest = { templateDialog = false },
+            title = { Text("ذخیره قالب جدید") },
             text = {
-                OutlinedTextField(
-                    value = renameValue,
-                    onValueChange = { renameValue = it },
-                    singleLine = true,
-                    label = { Text("نام جدید") }
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("قالب در بخش «قالب‌ها» نگهداری می‌شود و بعداً می‌توانی دوباره بازش کنی.")
+                    OutlinedTextField(templateName, { templateName = it }, singleLine = true, label = { Text("نام قالب") })
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    applyEdit { it.renameLayer(selected.path, renameValue) }
-                    renameDialog = false
-                }) { Text("ذخیره") }
+                    runCatching { onSaveTemplate(templateName, fileName, documentJson!!) }
+                        .onSuccess { Toast.makeText(context, "قالب در بخش قالب‌ها ذخیره شد", Toast.LENGTH_LONG).show() }
+                        .onFailure { Toast.makeText(context, it.message ?: "ذخیره نشد", Toast.LENGTH_LONG).show() }
+                    templateDialog = false
+                }) { Text("ذخیره قالب") }
             },
-            dismissButton = {
-                TextButton(onClick = { renameDialog = false }) { Text("انصراف") }
-            }
+            dismissButton = { TextButton(onClick = { templateDialog = false }) { Text("انصراف") } }
         )
     }
 }
@@ -768,6 +839,55 @@ private fun LayerTreeRow(
         LayerTreeRow(child, depth + 1, selectedPath, onSelect)
     }
 }
+
+@Composable
+private fun TemplatesPage(
+    modifier: Modifier,
+    templates: List<SavedTemplate>,
+    onOpen: (SavedTemplate) -> Unit,
+    onDelete: (SavedTemplate) -> Unit
+) {
+    Column(
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("قالب‌های من", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
+        Text("پروژه‌هایی که از ویرایشگر ذخیره کرده‌ای، اینجا باقی می‌مانند.", color = Color.LightGray)
+        if (templates.isEmpty()) {
+            Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+                Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.CollectionsBookmark, null, tint = Purple, modifier = Modifier.size(52.dp))
+                    Text("هنوز قالبی ذخیره نکرده‌ای", fontWeight = FontWeight.Bold)
+                    Text("به ویرایشگر برو و «ذخیره در قالب‌های من» را بزن.", color = Color.LightGray)
+                }
+            }
+        } else {
+            templates.forEach { item ->
+                Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Animation, null, tint = Purple)
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(item.name, fontWeight = FontWeight.Bold)
+                                Text(item.sourceName, color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { onOpen(item) }, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Default.FolderOpen, null); Text("باز کردن")
+                            }
+                            OutlinedButton(onClick = { onDelete(item) }) {
+                                Icon(Icons.Default.DeleteOutline, null); Text("حذف")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 @Composable
 fun SettingsPage(
