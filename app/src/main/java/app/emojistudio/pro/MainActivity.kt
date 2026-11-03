@@ -378,6 +378,10 @@ fun EmojiStudioApp() {
                     onDelete = { item ->
                         templateStore.delete(item.id)
                         templates = templateStore.all()
+                    },
+                    onRename = { item, newName ->
+                        templateStore.rename(item.id, newName)
+                        templates = templateStore.all()
                     }
                 )
             }
@@ -845,8 +849,11 @@ private fun TemplatesPage(
     modifier: Modifier,
     templates: List<SavedTemplate>,
     onOpen: (SavedTemplate) -> Unit,
-    onDelete: (SavedTemplate) -> Unit
+    onDelete: (SavedTemplate) -> Unit,
+    onRename: (SavedTemplate, String) -> Unit
 ) {
+    var renaming by remember { mutableStateOf<SavedTemplate?>(null) }
+    var renameValue by remember { mutableStateOf("") }
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -877,6 +884,9 @@ private fun TemplatesPage(
                             Button(onClick = { onOpen(item) }, modifier = Modifier.weight(1f)) {
                                 Icon(Icons.Default.FolderOpen, null); Text("باز کردن")
                             }
+                            OutlinedButton(onClick = { renameValue = item.name; renaming = item }) {
+                                Icon(Icons.Default.Edit, null); Text("نام")
+                            }
                             OutlinedButton(onClick = { onDelete(item) }) {
                                 Icon(Icons.Default.DeleteOutline, null); Text("حذف")
                             }
@@ -885,6 +895,29 @@ private fun TemplatesPage(
                 }
             }
         }
+    }
+    if (renaming != null) {
+        AlertDialog(
+            onDismissRequest = { renaming = null },
+            title = { Text("تغییر نام قالب") },
+            text = {
+                OutlinedTextField(
+                    value = renameValue,
+                    onValueChange = { renameValue = it },
+                    singleLine = true,
+                    label = { Text("نام جدید قالب") }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    renaming?.let { onRename(it, renameValue) }
+                    renaming = null
+                }) { Text("ذخیره") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renaming = null }) { Text("انصراف") }
+            }
+        )
     }
 }
 
