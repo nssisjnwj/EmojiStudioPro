@@ -5,11 +5,11 @@
     <application
         android:allowBackup="true"
         android:label="Emoji Studio Pro"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <activity
-            android:name=".MainActivity"
+            android:name="app.emojistudio.pro.MainActivity"
             android:exported="true">
 
             <intent-filter>
