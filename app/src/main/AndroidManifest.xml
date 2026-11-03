@@ -1,7 +1,10 @@
-
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
-        android:label="Emoji Studio Pro">
+        android:allowBackup="true"
+        android:label="Emoji Studio Pro"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true">
         <activity
             android:name="app.emojistudio.pro.MainActivity"
             android:exported="true">
