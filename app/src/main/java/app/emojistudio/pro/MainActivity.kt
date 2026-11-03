@@ -11,6 +11,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -746,7 +747,7 @@ private fun LayerTreeRow(
             when (node.type) {
                 "Precomposition" -> Icons.Default.Folder
                 "Text" -> Icons.Default.TextFields
-                "Shape" -> Icons.Default.Shapes
+                "Shape" -> Icons.Default.Category
                 else -> Icons.Default.Layers
             },
             null,
