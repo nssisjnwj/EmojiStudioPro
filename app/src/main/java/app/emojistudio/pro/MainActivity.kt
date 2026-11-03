@@ -341,6 +341,10 @@ fun EmojiStudioApp() {
                     },
                     onImport = {
                         picker.launch(arrayOf("*/*"))
+                    },
+                    onJsonChanged = { updated ->
+                        animationJson = updated
+                        prefs.edit().putString("last_json", updated).apply()
                     }
                 )
 
@@ -493,6 +497,7 @@ fun HomePage(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditorPage(
     modifier: Modifier,
@@ -501,110 +506,265 @@ fun EditorPage(
     fileName: String,
     playing: Boolean,
     onPlay: () -> Unit,
-    onImport: () -> Unit
+    onImport: () -> Unit,
+    onJsonChanged: (String) -> Unit
 ) {
-    val spec = LottieCompositionSpec.JsonString(
-        json ?: EMPTY_JSON
-    )
+    val context = LocalContext.current
+    var documentJson by remember(json) { mutableStateOf(json) }
+    val document = remember(documentJson) {
+        documentJson?.let { runCatching { LottieDocument.parse(it) }.getOrNull() }
+    }
+    var selectedPath by remember(documentJson) { mutableStateOf<String?>(null) }
+    var renameDialog by remember { mutableStateOf(false) }
+    var renameValue by remember { mutableStateOf("") }
+    var refreshTree by remember { mutableIntStateOf(0) }
+    val nodes = remember(documentJson, refreshTree) {
+        document?.let { runCatching { it.layerTree() }.getOrDefault(emptyList()) } ?: emptyList()
+    }
+    val selected = remember(nodes, selectedPath) {
+        fun find(items: List<LottieLayerNode>): LottieLayerNode? {
+            for (item in items) {
+                if (item.path == selectedPath) return item
+                find(item.children)?.let { return it }
+            }
+            return null
+        }
+        find(nodes)
+    }
 
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/gzip")
+    ) { uri ->
+        if (uri != null && document != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use {
+                    it.write(document.toTgsBytes())
+                } ?: error("Cannot create output file")
+                Toast.makeText(context, "TGS exported successfully", Toast.LENGTH_LONG).show()
+            }.onFailure {
+                Toast.makeText(context, "Export failed: ${it.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    fun applyEdit(edit: (LottieDocument) -> Unit) {
+        val current = document ?: return
+        runCatching {
+            edit(current)
+            val updated = current.json()
+            documentJson = updated
+            onJsonChanged(updated)
+            refreshTree++
+        }.onFailure {
+            Toast.makeText(context, it.message ?: "Edit failed", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    val spec = LottieCompositionSpec.JsonString(documentJson ?: EMPTY_JSON)
     val composition by rememberLottieComposition(spec)
-
     val animatedProgress by animateLottieCompositionAsState(
         composition = composition,
         iterations = LottieConstants.IterateForever,
-        isPlaying = playing && json != null
+        isPlaying = playing && documentJson != null
     )
 
     Column(
-        modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(
-            t[1],
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(t[1], style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(fileName, color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+            }
+            IconButton(onClick = onImport) {
+                Icon(Icons.Default.FileOpen, contentDescription = "Import")
+            }
+            IconButton(
+                onClick = { exportLauncher.launch(fileName.substringBeforeLast('.') + ".tgs") },
+                enabled = document != null
+            ) {
+                Icon(Icons.Default.SaveAlt, contentDescription = "Export TGS", tint = Purple)
+            }
+        }
 
         Box(
-            Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .background(
-                    Panel,
-                    RoundedCornerShape(18.dp)
-                ),
+            Modifier.fillMaxWidth().height(230.dp)
+                .background(Panel, RoundedCornerShape(18.dp)),
             contentAlignment = Alignment.Center
         ) {
-            if (json != null) {
+            if (documentJson != null) {
                 LottieAnimation(
                     composition = composition,
                     progress = { animatedProgress },
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(12.dp)
+                    modifier = Modifier.fillMaxSize().padding(12.dp)
                 )
             } else {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Icon(
-                        Icons.Default.Animation,
-                        null,
-                        tint = Purple,
-                        modifier = Modifier.size(60.dp)
-                    )
-
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.Animation, null, tint = Purple, modifier = Modifier.size(60.dp))
                     Text(t[7])
                 }
             }
         }
 
-        Text(
-            t[14],
-            color = Purple
-        )
-
-        Slider(
-            value = animatedProgress,
-            onValueChange = {}
-        )
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Button(
-                onClick = onPlay,
-                enabled = json != null
-            ) {
-                Icon(
-                    if (playing) Icons.Default.Pause
-                    else Icons.Default.PlayArrow,
-                    null
-                )
-
-                Spacer(Modifier.width(6.dp))
-
-                Text(
-                    if (playing) t[9] else t[8]
-                )
-            }
-
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(t[14], color = Purple, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
+            Button(onClick = onPlay, enabled = documentJson != null) {
+                Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, null)
+                Spacer(Modifier.width(5.dp))
+                Text(if (playing) t[9] else t[8])
+            }
+        }
+        Slider(value = animatedProgress, onValueChange = {}, enabled = false)
 
-            OutlinedButton(
-                onClick = onImport
-            ) {
-                Icon(Icons.Default.FileOpen, null)
-                Text(t[5])
+        Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("لایه‌ها", fontWeight = FontWeight.Bold, color = Purple, modifier = Modifier.weight(1f))
+                    Text("${nodes.size}", color = Color.LightGray)
+                }
+                if (nodes.isEmpty()) {
+                    Text("فایلی با لایه قابل ویرایش وارد نشده است.", color = Color.LightGray)
+                } else {
+                    nodes.forEach { node ->
+                        LayerTreeRow(node, 0, selectedPath) { selectedPath = it }
+                    }
+                }
             }
         }
 
-        Text(
-            "${t[15]}: $fileName",
-            color = Color.LightGray
+        if (selected != null && document != null) {
+            Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Text("ویرایش لایه", color = Purple, fontWeight = FontWeight.Bold)
+                    Text(selected.name, fontWeight = FontWeight.SemiBold)
+                    Text(selected.type, color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            renameValue = selected.name
+                            renameDialog = true
+                        }) {
+                            Icon(Icons.Default.DriveFileRenameOutline, null)
+                            Text("تغییر نام")
+                        }
+                        OutlinedButton(onClick = {
+                            applyEdit { it.setLayerHidden(selected.path, !selected.hidden) }
+                        }) {
+                            Icon(if (selected.hidden) Icons.Default.Visibility else Icons.Default.VisibilityOff, null)
+                            Text(if (selected.hidden) "نمایش" else "مخفی")
+                        }
+                    }
+                    Text("رنگ لایه (برای Fillهای ثابت)", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        listOf(0xFFFF4D8D.toInt(), 0xFF9B5CFF.toInt(), 0xFF22D3EE.toInt(), 0xFF4ADE80.toInt(), 0xFFFFC857.toInt()).forEach { color ->
+                            Surface(
+                                modifier = Modifier.size(34.dp),
+                                shape = RoundedCornerShape(50),
+                                color = Color(color),
+                                onClick = {
+                                    applyEdit { changed ->
+                                        val count = changed.setStaticFillColor(selected.path, color)
+                                        Toast.makeText(context, if (count > 0) "رنگ تغییر کرد" else "Fill ثابت پیدا نشد", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            ) {}
+                        }
+                    }
+                }
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    applyEdit { it.addRectangle("New Rectangle", 0xFF9B5CFF.toInt()) }
+                },
+                enabled = document != null,
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.AddBox, null)
+                Text("افزودن شکل")
+            }
+            OutlinedButton(
+                onClick = {
+                    documentJson?.let { onJsonChanged(it) }
+                    Toast.makeText(context, "پروژه ذخیره شد", Toast.LENGTH_SHORT).show()
+                },
+                enabled = document != null,
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.Save, null)
+                Text("ذخیره پروژه")
+            }
+        }
+    }
+
+    if (renameDialog && selected != null) {
+        AlertDialog(
+            onDismissRequest = { renameDialog = false },
+            title = { Text("تغییر نام لایه") },
+            text = {
+                OutlinedTextField(
+                    value = renameValue,
+                    onValueChange = { renameValue = it },
+                    singleLine = true,
+                    label = { Text("نام جدید") }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    applyEdit { it.renameLayer(selected.path, renameValue) }
+                    renameDialog = false
+                }) { Text("ذخیره") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameDialog = false }) { Text("انصراف") }
+            }
         )
+    }
+}
+
+@Composable
+private fun LayerTreeRow(
+    node: LottieLayerNode,
+    depth: Int,
+    selectedPath: String?,
+    onSelect: (String) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth()
+            .padding(start = (depth * 14).dp)
+            .background(
+                if (selectedPath == node.path) Color(0xFF302347) else Color.Transparent,
+                RoundedCornerShape(9.dp)
+            )
+            .padding(horizontal = 8.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            when (node.type) {
+                "Precomposition" -> Icons.Default.Folder
+                "Text" -> Icons.Default.TextFields
+                "Shape" -> Icons.Default.Shapes
+                else -> Icons.Default.Layers
+            },
+            null,
+            tint = if (node.hidden) Color.Gray else Purple,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(
+            Modifier.weight(1f)
+                .clickable { onSelect(node.path) }
+        ) {
+            Text(node.name, maxLines = 1, fontWeight = if (selectedPath == node.path) FontWeight.Bold else FontWeight.Normal)
+            Text(node.type, color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+        }
+        if (node.hidden) Icon(Icons.Default.VisibilityOff, null, tint = Color.Gray, modifier = Modifier.size(16.dp))
+    }
+    node.children.forEach { child ->
+        LayerTreeRow(child, depth + 1, selectedPath, onSelect)
     }
 }
 
