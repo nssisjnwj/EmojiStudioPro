@@ -77,6 +77,106 @@ class LottieDocument private constructor(private val root: JSONObject) {
         return changed
     }
 
+    fun layerDescription(path: String): String {
+        val layer = resolveLayer(path)
+        val type = when (layer.optInt("ty", -1)) {
+            0 -> "پوشه / Precomp"
+            1 -> "لایه رنگی"
+            2 -> "تصویر"
+            3 -> "لایه کنترلی"
+            4 -> "شکل برداری"
+            5 -> "متن"
+            else -> "لایه"
+        }
+        val text = readText(layer)
+        val shapeCount = layer.optJSONArray("shapes")?.length() ?: 0
+        return buildString {
+            append(type)
+            if (text != null) append(" • متن: ").append(text)
+            if (shapeCount > 0) append(" • ").append(shapeCount).append(" گروه شکل")
+            if (layer.optBoolean("hd", false)) append(" • مخفی")
+        }
+    }
+
+    fun readTextLayer(path: String): String? = readText(resolveLayer(path))
+
+    fun setTextLayer(path: String, newText: String): Boolean {
+        val layer = resolveLayer(path)
+        val textData = layer.optJSONObject("t")?.optJSONObject("d")?.optJSONArray("k")
+            ?: return false
+        var changed = false
+        for (i in 0 until textData.length()) {
+            val keyframe = textData.optJSONObject(i) ?: continue
+            val style = keyframe.optJSONObject("s") ?: continue
+            if (style.has("t")) {
+                style.put("t", newText)
+                changed = true
+            }
+        }
+        return changed
+    }
+
+    fun setLayerTransform(path: String, x: Double? = null, y: Double? = null,
+                          rotation: Double? = null, scalePercent: Double? = null) {
+        val layer = resolveLayer(path)
+        val ks = layer.optJSONObject("ks") ?: throw IllegalArgumentException("Transform این لایه موجود نیست")
+        if (x != null || y != null) {
+            val p = ks.optJSONObject("p") ?: throw IllegalArgumentException("موقعیت این لایه قابل ویرایش نیست")
+            val k = p.optJSONArray("k") ?: throw IllegalArgumentException("موقعیت متحرک است و ویرایش مستقیم پشتیبانی نمی‌شود")
+            require(k.length() >= 2) { "فرمت موقعیت پشتیبانی نمی‌شود" }
+            if (x != null) k.put(0, x)
+            if (y != null) k.put(1, y)
+        }
+        if (rotation != null) {
+            val r = ks.optJSONObject("r") ?: ks.optJSONObject("rz")
+                ?: throw IllegalArgumentException("چرخش این لایه موجود نیست")
+            require(r.optInt("a", 0) == 0) { "چرخش متحرک است و ویرایش مستقیم پشتیبانی نمی‌شود" }
+            r.put("k", rotation)
+        }
+        if (scalePercent != null) {
+            val s = ks.optJSONObject("s") ?: throw IllegalArgumentException("اندازه این لایه موجود نیست")
+            val k = s.optJSONArray("k") ?: throw IllegalArgumentException("اندازه متحرک است و ویرایش مستقیم پشتیبانی نمی‌شود")
+            require(k.length() >= 2) { "فرمت اندازه پشتیبانی نمی‌شود" }
+            k.put(0, scalePercent)
+            k.put(1, scalePercent)
+        }
+    }
+
+    fun nearestRootLayer(x: Double, y: Double): String? {
+        val layers = root.optJSONArray("layers") ?: return null
+        val width = root.optDouble("w", 512.0).coerceAtLeast(1.0)
+        val height = root.optDouble("h", 512.0).coerceAtLeast(1.0)
+        var bestPath: String? = null
+        var bestDistance = Double.MAX_VALUE
+        for (i in 0 until layers.length()) {
+            val layer = layers.optJSONObject(i) ?: continue
+            if (layer.optBoolean("hd", false)) continue
+            val position = layer.optJSONObject("ks")?.optJSONObject("p")?.optJSONArray("k")
+                ?: continue
+            if (position.length() < 2 || position.opt(0) !is Number || position.opt(1) !is Number) continue
+            val lx = position.optDouble(0) / width
+            val ly = position.optDouble(1) / height
+            val dx = lx - x
+            val dy = ly - y
+            val distance = dx * dx + dy * dy
+            if (distance < bestDistance) {
+                bestDistance = distance
+                bestPath = "root/l:$i"
+            }
+        }
+        return if (bestDistance <= 0.20 * 0.20) bestPath else null
+    }
+
+    private fun readText(layer: JSONObject): String? {
+        val keyframes = layer.optJSONObject("t")?.optJSONObject("d")?.optJSONArray("k") ?: return null
+        for (i in 0 until keyframes.length()) {
+            val style = keyframes.optJSONObject(i)?.optJSONObject("s") ?: continue
+            val text = style.optString("t", "")
+            if (text.isNotEmpty()) return text
+        }
+        return null
+    }
+
     fun addRectangle(name: String, argb: Int) {
         val layers = root.optJSONArray("layers") ?: JSONArray().also { root.put("layers", it) }
         val width = root.optInt("w", 512).coerceAtLeast(1)
