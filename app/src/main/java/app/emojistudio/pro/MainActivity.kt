@@ -5,9 +5,6 @@ import android.os.Bundle
 import android.net.Uri
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color as AndroidColor
-import android.net.Uri
-import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -15,8 +12,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -30,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.airbnb.lottie.compose.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.util.zip.GZIPInputStream
@@ -44,7 +42,9 @@ private const val EMPTY_JSON =
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { EmojiStudioApp() }
+        setContent {
+            EmojiStudioApp()
+        }
     }
 }
 
@@ -114,62 +114,82 @@ private val translations = mapOf(
     )
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EmojiStudioApp() {
     val context = LocalContext.current
+
     val prefs = remember {
-        context.getSharedPreferences("emoji_studio", Context.MODE_PRIVATE)
+        context.getSharedPreferences(
+            "emoji_studio",
+            Context.MODE_PRIVATE
+        )
     }
 
+    val scope = rememberCoroutineScope()
+
     var language by remember {
-        mutableStateOf(prefs.getString("language", "fa") ?: "fa")
+        mutableStateOf(
+            prefs.getString("language", "fa") ?: "fa"
+        )
     }
 
     var page by remember { mutableIntStateOf(0) }
+
     var animationJson by remember {
         mutableStateOf(prefs.getString("last_json", null))
     }
+
     var fileName by remember {
         mutableStateOf(prefs.getString("last_name", "") ?: "")
     }
+
     var playing by remember { mutableStateOf(true) }
-    var progress by remember { mutableFloatStateOf(0f) }
     var showLanguages by remember { mutableStateOf(false) }
     var importing by remember { mutableStateOf(false) }
 
     val t = translations[language] ?: translations.getValue("en")
 
     val picker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
+        contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
+
         if (uri != null) {
             importing = true
+
             try {
                 context.contentResolver.takePersistableUriPermission(
-                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
 
-            val resolver = context.contentResolver
-
-            // File reading is performed asynchronously below.
-            kotlinx.coroutines.MainScope().launch {
+            scope.launch {
                 try {
+                    val resolver = context.contentResolver
+
                     val bytes = withContext(Dispatchers.IO) {
-                        resolver.openInputStream(uri)?.use { it.readBytes() }
-                            ?: throw Exception("Cannot open file")
+                        resolver.openInputStream(uri)?.use {
+                            it.readBytes()
+                        } ?: throw Exception("Cannot open file")
                     }
 
-                    val decoded = if (
-                        bytes.size >= 2 &&
-                        bytes[0] == 0x1f.toByte() &&
-                        bytes[1] == 0x8b.toByte()
-                    ) {
-                        GZIPInputStream(ByteArrayInputStream(bytes))
-                            .bufferedReader(Charsets.UTF_8)
-                            .use { it.readText() }
-                    } else {
-                        bytes.toString(Charsets.UTF_8)
+                    val decoded = withContext(Dispatchers.IO) {
+                        val isGzip =
+                            bytes.size >= 2 &&
+                            bytes[0] == 0x1f.toByte() &&
+                            bytes[1] == 0x8b.toByte()
+
+                        if (isGzip) {
+                            GZIPInputStream(
+                                ByteArrayInputStream(bytes)
+                            ).bufferedReader(Charsets.UTF_8).use {
+                                it.readText()
+                            }
+                        } else {
+                            bytes.toString(Charsets.UTF_8)
+                        }
                     }
 
                     if (!decoded.trimStart().startsWith("{")) {
@@ -177,18 +197,27 @@ fun EmojiStudioApp() {
                     }
 
                     animationJson = decoded
-                    fileName = uri.lastPathSegment ?: "emoji.tgs"
+                    fileName = uri.lastPathSegment
+                        ?.substringAfterLast("/")
+                        ?: "emoji.tgs"
+
                     prefs.edit()
                         .putString("last_json", decoded)
                         .putString("last_name", fileName)
                         .apply()
 
                     Toast.makeText(
-                        context, t[12], Toast.LENGTH_LONG
+                        context,
+                        t[12],
+                        Toast.LENGTH_LONG
                     ).show()
+
+                    page = 1
+
                 } catch (e: Exception) {
                     Toast.makeText(
-                        context, t[13] + ": " + (e.message ?: ""),
+                        context,
+                        t[13] + ": " + (e.message ?: ""),
                         Toast.LENGTH_LONG
                     ).show()
                 } finally {
@@ -207,6 +236,7 @@ fun EmojiStudioApp() {
     ) {
         Scaffold(
             containerColor = Dark,
+
             topBar = {
                 TopAppBar(
                     title = {
@@ -226,42 +256,65 @@ fun EmojiStudioApp() {
                         containerColor = Panel
                     ),
                     actions = {
-                        IconButton(onClick = { page = 2 }) {
-                            Icon(Icons.Default.Settings, "Settings")
+                        IconButton(
+                            onClick = { page = 2 }
+                        ) {
+                            Icon(
+                                Icons.Default.Settings,
+                                contentDescription = "Settings"
+                            )
                         }
                     }
                 )
             },
+
             bottomBar = {
-                NavigationBar(containerColor = Panel) {
+                NavigationBar(
+                    containerColor = Panel
+                ) {
                     NavigationBarItem(
                         selected = page == 0,
                         onClick = { page = 0 },
-                        icon = { Icon(Icons.Default.Home, null) },
-                        label = { Text(t[0]) }
+                        icon = {
+                            Icon(Icons.Default.Home, null)
+                        },
+                        label = {
+                            Text(t[0])
+                        }
                     )
+
                     NavigationBarItem(
                         selected = page == 1,
                         onClick = { page = 1 },
-                        icon = { Icon(Icons.Default.Edit, null) },
-                        label = { Text(t[1]) }
+                        icon = {
+                            Icon(Icons.Default.Edit, null)
+                        },
+                        label = {
+                            Text(t[1])
+                        }
                     )
+
                     NavigationBarItem(
                         selected = page == 2,
                         onClick = { page = 2 },
-                        icon = { Icon(Icons.Default.Settings, null) },
-                        label = { Text(t[2]) }
+                        icon = {
+                            Icon(Icons.Default.Settings, null)
+                        },
+                        label = {
+                            Text(t[2])
+                        }
                     )
                 }
             }
         ) { padding ->
+
             when (page) {
                 0 -> HomePage(
-                    Modifier.padding(padding),
-                    t,
-                    fileName,
-                    animationJson != null,
-                    importing,
+                    modifier = Modifier.padding(padding),
+                    t = t,
+                    fileName = fileName,
+                    hasFile = animationJson != null,
+                    importing = importing,
                     onImport = {
                         picker.launch(
                             arrayOf(
@@ -272,33 +325,31 @@ fun EmojiStudioApp() {
                             )
                         )
                     },
-                    onEditor = { page = 1 }
+                    onEditor = {
+                        page = 1
+                    }
                 )
 
                 1 -> EditorPage(
-                    Modifier.padding(padding),
-                    t,
-                    animationJson,
-                    fileName,
-                    playing,
-                    progress,
-                    onPlay = { playing = !playing },
-                    onProgress = { progress = it },
+                    modifier = Modifier.padding(padding),
+                    t = t,
+                    json = animationJson,
+                    fileName = fileName,
+                    playing = playing,
+                    onPlay = {
+                        playing = !playing
+                    },
                     onImport = {
                         picker.launch(arrayOf("*/*"))
                     }
                 )
 
                 2 -> SettingsPage(
-                    Modifier.padding(padding),
-                    t,
-                    language,
-                    showLanguages,
-                    onShowLanguages = { showLanguages = true },
-                    onLanguage = {
-                        language = it
-                        prefs.edit().putString("language", it).apply()
-                        showLanguages = false
+                    modifier = Modifier.padding(padding),
+                    t = t,
+                    language = language,
+                    onShowLanguages = {
+                        showLanguages = true
                     }
                 )
             }
@@ -306,17 +357,23 @@ fun EmojiStudioApp() {
 
         if (showLanguages) {
             AlertDialog(
-                onDismissRequest = { showLanguages = false },
-                title = { Text(t[10]) },
+                onDismissRequest = {
+                    showLanguages = false
+                },
+                title = {
+                    Text(t[10])
+                },
                 text = {
                     Column {
                         languages.forEach { item ->
                             TextButton(
-                                onClick = { 
+                                onClick = {
                                     language = item.code
-                                    prefs.edit().putString(
-                                        "language", item.code
-                                    ).apply()
+
+                                    prefs.edit()
+                                        .putString("language", item.code)
+                                        .apply()
+
                                     showLanguages = false
                                 },
                                 modifier = Modifier.fillMaxWidth()
@@ -330,9 +387,13 @@ fun EmojiStudioApp() {
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = {
-                        showLanguages = false
-                    }) { Text("OK") }
+                    TextButton(
+                        onClick = {
+                            showLanguages = false
+                        }
+                    ) {
+                        Text("OK")
+                    }
                 }
             )
         }
@@ -350,7 +411,8 @@ fun HomePage(
     onEditor: () -> Unit
 ) {
     Column(
-        modifier.fillMaxSize()
+        modifier
+            .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
@@ -360,17 +422,22 @@ fun HomePage(
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Black
         )
+
         Text(
             "Create and customize Telegram animations",
             color = Color.LightGray
         )
 
         Card(
-            colors = CardDefaults.cardColors(containerColor = Panel),
+            colors = CardDefaults.cardColors(
+                containerColor = Panel
+            ),
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(
-                Modifier.fillMaxWidth().padding(24.dp),
+                Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Icon(
@@ -379,19 +446,26 @@ fun HomePage(
                     tint = Purple,
                     modifier = Modifier.size(65.dp)
                 )
+
                 Text(
                     if (hasFile) fileName else t[7],
                     fontWeight = FontWeight.Bold
                 )
+
                 if (hasFile) {
-                    Text("TGS / Lottie", color = Purple)
+                    Text(
+                        "TGS / Lottie",
+                        color = Purple
+                    )
                 }
             }
         }
 
         Button(
             onClick = onImport,
-            modifier = Modifier.fillMaxWidth().height(58.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(58.dp),
             enabled = !importing
         ) {
             if (importing) {
@@ -408,7 +482,9 @@ fun HomePage(
 
         OutlinedButton(
             onClick = onEditor,
-            modifier = Modifier.fillMaxWidth().height(55.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(55.dp)
         ) {
             Icon(Icons.Default.Edit, null)
             Spacer(Modifier.width(8.dp))
@@ -424,13 +500,15 @@ fun EditorPage(
     json: String?,
     fileName: String,
     playing: Boolean,
-    progress: Float,
     onPlay: () -> Unit,
-    onProgress: (Float) -> Unit,
     onImport: () -> Unit
 ) {
-    val spec = LottieCompositionSpec.JsonString(json ?: EMPTY_JSON)
+    val spec = LottieCompositionSpec.JsonString(
+        json ?: EMPTY_JSON
+    )
+
     val composition by rememberLottieComposition(spec)
+
     val animatedProgress by animateLottieCompositionAsState(
         composition = composition,
         iterations = LottieConstants.IterateForever,
@@ -438,7 +516,9 @@ fun EditorPage(
     )
 
     Column(
-        modifier.fillMaxSize().padding(16.dp),
+        modifier
+            .fillMaxSize()
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Text(
@@ -448,54 +528,83 @@ fun EditorPage(
         )
 
         Box(
-            Modifier.fillMaxWidth()
+            Modifier
+                .fillMaxWidth()
                 .weight(1f)
-                .background(Panel, RoundedCornerShape(18.dp)),
+                .background(
+                    Panel,
+                    RoundedCornerShape(18.dp)
+                ),
             contentAlignment = Alignment.Center
         ) {
             if (json != null) {
                 LottieAnimation(
                     composition = composition,
                     progress = { animatedProgress },
-                    modifier = Modifier.fillMaxSize().padding(12.dp)
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(12.dp)
                 )
             } else {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
                     Icon(
                         Icons.Default.Animation,
                         null,
                         tint = Purple,
                         modifier = Modifier.size(60.dp)
                     )
+
                     Text(t[7])
                 }
             }
         }
 
-        Text(t[14], color = Purple)
-        Slider(
-            value = if (playing) animatedProgress else progress,
-            onValueChange = onProgress
+        Text(
+            t[14],
+            color = Purple
         )
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Button(onClick = onPlay, enabled = json != null) {
+        Slider(
+            value = animatedProgress,
+            onValueChange = {}
+        )
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Button(
+                onClick = onPlay,
+                enabled = json != null
+            ) {
                 Icon(
                     if (playing) Icons.Default.Pause
                     else Icons.Default.PlayArrow,
                     null
                 )
+
                 Spacer(Modifier.width(6.dp))
-                Text(if (playing) t[9] else t[8])
+
+                Text(
+                    if (playing) t[9] else t[8]
+                )
             }
+
             Spacer(Modifier.weight(1f))
-            OutlinedButton(onClick = onImport) {
+
+            OutlinedButton(
+                onClick = onImport
+            ) {
                 Icon(Icons.Default.FileOpen, null)
                 Text(t[5])
             }
         }
 
-        Text("${t[15]}: $fileName", color = Color.LightGray)
+        Text(
+            "${t[15]}: $fileName",
+            color = Color.LightGray
+        )
     }
 }
 
@@ -504,12 +613,12 @@ fun SettingsPage(
     modifier: Modifier,
     t: List<String>,
     language: String,
-    showLanguages: Boolean,
-    onShowLanguages: () -> Unit,
-    onLanguage: (String) -> Unit
+    onShowLanguages: () -> Unit
 ) {
     Column(
-        modifier.fillMaxSize().padding(20.dp),
+        modifier
+            .fillMaxSize()
+            .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         Text(
@@ -519,24 +628,38 @@ fun SettingsPage(
         )
 
         Card(
-            colors = CardDefaults.cardColors(containerColor = Panel),
+            colors = CardDefaults.cardColors(
+                containerColor = Panel
+            ),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Column(Modifier.padding(18.dp)) {
-                Text(t[10], color = Purple)
+            Column(
+                Modifier.padding(18.dp)
+            ) {
+                Text(
+                    t[10],
+                    color = Purple
+                )
+
                 Spacer(Modifier.height(10.dp))
+
                 TextButton(
                     onClick = onShowLanguages,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    val selected = languages.first {
+                    val selected = languages.firstOrNull {
                         it.code == language
-                    }
+                    } ?: languages.first()
+
                     Text(
                         "${selected.flag}   ${selected.title}",
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.weight(1f)
                     )
-                    Icon(Icons.Default.ArrowDropDown, null)
+
+                    Icon(
+                        Icons.Default.ArrowDropDown,
+                        null
+                    )
                 }
             }
         }
@@ -545,6 +668,10 @@ fun SettingsPage(
             "Emoji Studio Pro",
             color = Color.LightGray
         )
-        Text("Version 1.1", color = Purple)
+
+        Text(
+            "Version 1.1",
+            color = Purple
+        )
     }
 }
