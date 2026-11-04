@@ -39,35 +39,73 @@ class LottieDocument private constructor(private val root: JSONObject) {
         val layer = resolveLayer(path)
         val ks = layer.optJSONObject("ks") ?: JSONObject().also { layer.put("ks", it) }
         val opacity = ks.optJSONObject("o") ?: JSONObject().also { ks.put("o", it) }
-        opacity.put("a", 0)
-        opacity.put("k", opacityPercent.coerceIn(0, 100))
+        updateScalarProperty(opacity, opacityPercent.coerceIn(0, 100).toDouble())
     }
 
-    /** Changes non-keyframed solid fill colors in the selected layer and its shape groups. */
+    fun readLayerOpacity(path: String): Int {
+        val property = resolveLayer(path).optJSONObject("ks")?.optJSONObject("o") ?: return 100
+        return readScalarProperty(property)?.toInt()?.coerceIn(0, 100) ?: 100
+    }
+
+    fun readLayerPosition(path: String): Pair<Double, Double>? {
+        val property = resolveLayer(path).optJSONObject("ks")?.optJSONObject("p") ?: return null
+        val values = readVectorProperty(property) ?: return null
+        if (values.size < 2) return null
+        return values[0] to values[1]
+    }
+
+    fun readLayerRotation(path: String): Double? {
+        val ks = resolveLayer(path).optJSONObject("ks") ?: return null
+        val property = ks.optJSONObject("r") ?: ks.optJSONObject("rz") ?: return null
+        return readScalarProperty(property)
+    }
+
+    fun readLayerScale(path: String): Double? {
+        val property = resolveLayer(path).optJSONObject("ks")?.optJSONObject("s") ?: return null
+        return readVectorProperty(property)?.firstOrNull()
+    }
+
+    /** Updates fill and stroke colors in the selected layer, including color keyframes. */
     fun setStaticFillColor(path: String, argb: Int): Int {
         val layer = resolveLayer(path)
-        val red = ((argb shr 16) and 0xff) / 255.0
-        val green = ((argb shr 8) and 0xff) / 255.0
-        val blue = (argb and 0xff) / 255.0
+        val rgba = listOf(
+            ((argb shr 16) and 0xff) / 255.0,
+            ((argb shr 8) and 0xff) / 255.0,
+            (argb and 0xff) / 255.0
+        )
         var changed = 0
+
+        fun updateColorFrame(frame: JSONObject, key: String) {
+            val values = frame.optJSONArray(key) ?: return
+            if (values.length() < 3 || values.opt(0) !is Number) return
+            for (i in 0..2) values.put(i, rgba[i])
+            changed++
+        }
 
         fun walk(value: Any?) {
             when (value) {
                 is JSONObject -> {
-                    if (value.optString("ty") == "fl") {
+                    val type = value.optString("ty")
+                    if (type == "fl" || type == "st") {
                         val color = value.optJSONObject("c")
-                        val key = color?.opt("k")
-                        if (key is JSONArray && key.length() >= 3 && key.opt(0) is Number) {
-                            key.put(0, red)
-                            key.put(1, green)
-                            key.put(2, blue)
-                            changed++
+                        val property = color?.opt("k")
+                        if (property is JSONArray) {
+                            if (property.length() >= 3 && property.opt(0) is Number) {
+                                for (i in 0..2) property.put(i, rgba[i])
+                                changed++
+                            } else {
+                                for (i in 0 until property.length()) {
+                                    val frame = property.optJSONObject(i) ?: continue
+                                    updateColorFrame(frame, "s")
+                                    if (frame.has("e")) updateColorFrame(frame, "e")
+                                }
+                            }
                         }
                     }
-                    val keys = value.keys()
-                    val names = mutableListOf<String>()
-                    while (keys.hasNext()) names.add(keys.next())
-                    names.forEach { walk(value.opt(it)) }
+                    val iterator = value.keys()
+                    val keys = mutableListOf<String>()
+                    while (iterator.hasNext()) keys += iterator.next()
+                    keys.forEach { walk(value.opt(it)) }
                 }
                 is JSONArray -> for (i in 0 until value.length()) walk(value.opt(i))
             }
@@ -118,28 +156,85 @@ class LottieDocument private constructor(private val root: JSONObject) {
 
     fun setLayerTransform(path: String, x: Double? = null, y: Double? = null,
                           rotation: Double? = null, scalePercent: Double? = null) {
-        val layer = resolveLayer(path)
-        val ks = layer.optJSONObject("ks") ?: throw IllegalArgumentException("Transform این لایه موجود نیست")
+        val ks = resolveLayer(path).optJSONObject("ks")
+            ?: throw IllegalArgumentException("Transform این لایه موجود نیست")
         if (x != null || y != null) {
             val p = ks.optJSONObject("p") ?: throw IllegalArgumentException("موقعیت این لایه قابل ویرایش نیست")
-            val k = p.optJSONArray("k") ?: throw IllegalArgumentException("موقعیت متحرک است و ویرایش مستقیم پشتیبانی نمی‌شود")
-            require(k.length() >= 2) { "فرمت موقعیت پشتیبانی نمی‌شود" }
-            if (x != null) k.put(0, x)
-            if (y != null) k.put(1, y)
+            updateVectorProperty(p, mapOf(0 to x, 1 to y).filterValues { it != null }.mapValues { it.value!! })
         }
         if (rotation != null) {
             val r = ks.optJSONObject("r") ?: ks.optJSONObject("rz")
                 ?: throw IllegalArgumentException("چرخش این لایه موجود نیست")
-            require(r.optInt("a", 0) == 0) { "چرخش متحرک است و ویرایش مستقیم پشتیبانی نمی‌شود" }
-            r.put("k", rotation)
+            updateScalarProperty(r, rotation)
         }
         if (scalePercent != null) {
-            val s = ks.optJSONObject("s") ?: throw IllegalArgumentException("اندازه این لایه موجود نیست")
-            val k = s.optJSONArray("k") ?: throw IllegalArgumentException("اندازه متحرک است و ویرایش مستقیم پشتیبانی نمی‌شود")
-            require(k.length() >= 2) { "فرمت اندازه پشتیبانی نمی‌شود" }
-            k.put(0, scalePercent)
-            k.put(1, scalePercent)
+            val scale = ks.optJSONObject("s") ?: throw IllegalArgumentException("اندازه این لایه موجود نیست")
+            updateVectorProperty(scale, mapOf(0 to scalePercent, 1 to scalePercent))
         }
+    }
+
+    private fun readScalarProperty(property: JSONObject): Double? {
+        val key = property.opt("k")
+        if (property.optInt("a", 0) == 0) return (key as? Number)?.toDouble()
+        val first = (key as? JSONArray)?.optJSONObject(0) ?: return null
+        val value = first.opt("s")
+        return when (value) {
+            is JSONArray -> (value.opt(0) as? Number)?.toDouble()
+            is Number -> value.toDouble()
+            else -> null
+        }
+    }
+
+    private fun readVectorProperty(property: JSONObject): List<Double>? {
+        val key = property.opt("k")
+        val values = if (property.optInt("a", 0) == 0) key as? JSONArray
+            else ((key as? JSONArray)?.optJSONObject(0)?.opt("s") as? JSONArray)
+        if (values == null) return null
+        return (0 until values.length()).mapNotNull { (values.opt(it) as? Number)?.toDouble() }
+    }
+
+    private fun updateScalarProperty(property: JSONObject, value: Double) {
+        val key = property.opt("k")
+        if (property.optInt("a", 0) == 0) {
+            property.put("k", value)
+            return
+        }
+        val frames = key as? JSONArray ?: throw IllegalArgumentException("ساختار Keyframe این ویژگی معتبر نیست")
+        for (i in 0 until frames.length()) {
+            val frame = frames.optJSONObject(i) ?: continue
+            updateFrameValue(frame, "s", value)
+            if (frame.has("e")) updateFrameValue(frame, "e", value)
+        }
+    }
+
+    private fun updateVectorProperty(property: JSONObject, updates: Map<Int, Double>) {
+        val key = property.opt("k")
+        if (property.optInt("a", 0) == 0) {
+            val values = key as? JSONArray ?: throw IllegalArgumentException("این ویژگی برداری قابل ویرایش نیست")
+            updates.forEach { (index, value) ->
+                require(index < values.length()) { "ساختار بردار این ویژگی پشتیبانی نمی‌شود" }
+                values.put(index, value)
+            }
+            return
+        }
+        val frames = key as? JSONArray ?: throw IllegalArgumentException("ساختار Keyframe این ویژگی معتبر نیست")
+        for (i in 0 until frames.length()) {
+            val frame = frames.optJSONObject(i) ?: continue
+            updateFrameVector(frame, "s", updates)
+            if (frame.has("e")) updateFrameVector(frame, "e", updates)
+        }
+    }
+
+    private fun updateFrameValue(frame: JSONObject, key: String, value: Double) {
+        when (val current = frame.opt(key)) {
+            is JSONArray -> current.put(0, value)
+            is Number -> frame.put(key, value)
+        }
+    }
+
+    private fun updateFrameVector(frame: JSONObject, key: String, updates: Map<Int, Double>) {
+        val values = frame.optJSONArray(key) ?: return
+        updates.forEach { (index, value) -> if (index < values.length()) values.put(index, value) }
     }
 
     fun nearestRootLayer(x: Double, y: Double): String? {
