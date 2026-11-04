@@ -4,7 +4,7 @@ name: Build Emoji Studio Pro APK
 on:
   push:
     branches:
-      - main
+      - "**"
   workflow_dispatch:
 
 jobs:
