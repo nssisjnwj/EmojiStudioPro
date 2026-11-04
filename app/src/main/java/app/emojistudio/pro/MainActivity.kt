@@ -310,7 +310,7 @@ fun EmojiStudioApp() {
                         selected = page == 3,
                         onClick = { templates = templateStore.all(); page = 3 },
                         icon = { Icon(Icons.Default.CollectionsBookmark, null) },
-                        label = { Text("قالب‌ها") }
+                        label = { Text("پروژه‌ها") }
                     )
                 }
             }
@@ -570,6 +570,8 @@ fun EditorPage(
     var rotationValue by remember(selectedPath) { mutableStateOf("0") }
     var scaleValue by remember(selectedPath) { mutableStateOf("100") }
 
+    var validationMessage by remember { mutableStateOf<String?>(null) }
+
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/gzip")
     ) { uri ->
@@ -582,6 +584,23 @@ fun EditorPage(
                 Toast.makeText(context, "خطا در خروجی: ${it.message}", Toast.LENGTH_LONG).show()
             }
         }
+    }
+
+    fun requestExport() {
+        val current = document ?: return
+        val report = TelegramTgsValidator.validate(current.json())
+        if (!report.isValid) {
+            validationMessage = (listOf("خروجی با استاندارد TGS سازگار نیست:") + report.errors +
+                (if (report.warnings.isNotEmpty()) listOf("", "هشدارها:") + report.warnings else emptyList())).joinToString("\n")
+            return
+        }
+        validationMessage = if (report.warnings.isEmpty()) {
+            "بررسی ساختاری موفق بود. حجم فشرده: ${report.compressedBytes} بایت."
+        } else {
+            (listOf("بررسی ساختاری موفق بود.") + report.warnings +
+                listOf("حجم فشرده: ${report.compressedBytes} بایت.")).joinToString("\n")
+        }
+        exportLauncher.launch(fileName.substringBeforeLast('.') + ".tgs")
     }
 
     fun applyEdit(edit: (LottieDocument) -> Unit) {
@@ -614,7 +633,7 @@ fun EditorPage(
                 Text(fileName, color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
             }
             IconButton(onClick = onImport) { Icon(Icons.Default.FileOpen, contentDescription = "Import") }
-            IconButton(onClick = { exportLauncher.launch(fileName.substringBeforeLast('.') + ".tgs") }, enabled = document != null) {
+            IconButton(onClick = { requestExport() }, enabled = document != null) {
                 Icon(Icons.Default.Download, contentDescription = "Export TGS", tint = Purple)
             }
         }
@@ -758,9 +777,9 @@ fun EditorPage(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { templateName = fileName.substringBeforeLast('.').ifBlank { "قالب من" }; templateDialog = true },
                 enabled = document != null, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Default.BookmarkAdd, null); Text("ذخیره در قالب‌های من")
+                Icon(Icons.Default.BookmarkAdd, null); Text("ذخیره پروژه")
             }
-            OutlinedButton(onClick = { exportLauncher.launch(fileName.substringBeforeLast('.') + ".tgs") },
+            OutlinedButton(onClick = { requestExport() },
                 enabled = document != null, modifier = Modifier.weight(1f)) {
                 Icon(Icons.Default.FileDownload, null); Text("خروجی TGS")
             }
@@ -778,14 +797,24 @@ fun EditorPage(
             dismissButton = { TextButton(onClick = { renameDialog = false }) { Text("انصراف") } }
         )
     }
+    if (validationMessage != null) {
+        AlertDialog(
+            onDismissRequest = { validationMessage = null },
+            title = { Text("گزارش اعتبارسنجی TGS") },
+            text = { Text(validationMessage!!, style = MaterialTheme.typography.bodySmall) },
+            confirmButton = {
+                TextButton(onClick = { validationMessage = null }) { Text("متوجه شدم") }
+            }
+        )
+    }
     if (templateDialog && documentJson != null) {
         AlertDialog(
             onDismissRequest = { templateDialog = false },
-            title = { Text("ذخیره قالب جدید") },
+            title = { Text("ذخیره پروژه جدید") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("قالب در بخش «قالب‌ها» نگهداری می‌شود و بعداً می‌توانی دوباره بازش کنی.")
-                    OutlinedTextField(templateName, { templateName = it }, singleLine = true, label = { Text("نام قالب") })
+                    OutlinedTextField(templateName, { templateName = it }, singleLine = true, label = { Text("نام پروژه") })
                 }
             },
             confirmButton = {
@@ -794,7 +823,7 @@ fun EditorPage(
                         .onSuccess { Toast.makeText(context, "قالب در بخش قالب‌ها ذخیره شد", Toast.LENGTH_LONG).show() }
                         .onFailure { Toast.makeText(context, it.message ?: "ذخیره نشد", Toast.LENGTH_LONG).show() }
                     templateDialog = false
-                }) { Text("ذخیره قالب") }
+                }) { Text("ذخیره پروژه") }
             },
             dismissButton = { TextButton(onClick = { templateDialog = false }) { Text("انصراف") } }
         )
@@ -858,8 +887,8 @@ private fun TemplatesPage(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text("قالب‌های من", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
-        Text("پروژه‌هایی که از ویرایشگر ذخیره کرده‌ای، اینجا باقی می‌مانند.", color = Color.LightGray)
+        Text("پروژه‌های من", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
+        Text("پروژه‌ها با فایل مستقل در حافظه داخلی برنامه نگهداری می‌شوند؛ می‌توانی آن‌ها را باز کنی، تغییر نام بدهی یا حذف کنی.", color = Color.LightGray)
         if (templates.isEmpty()) {
             Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
                 Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -899,13 +928,13 @@ private fun TemplatesPage(
     if (renaming != null) {
         AlertDialog(
             onDismissRequest = { renaming = null },
-            title = { Text("تغییر نام قالب") },
+            title = { Text("تغییر نام پروژه") },
             text = {
                 OutlinedTextField(
                     value = renameValue,
                     onValueChange = { renameValue = it },
                     singleLine = true,
-                    label = { Text("نام جدید قالب") }
+                    label = { Text("نام جدید پروژه") }
                 )
             },
             confirmButton = {
