@@ -547,7 +547,7 @@ fun EditorPage(
     val nodes = remember(documentJson, refreshTree) {
         document?.let { runCatching { it.layerTree() }.getOrDefault(emptyList()) } ?: emptyList()
     }
-    var selectedPath by remember(documentJson) { mutableStateOf(nodes.firstOrNull()?.path) }
+    var selectedPath by remember(fileName) { mutableStateOf(nodes.firstOrNull()?.path) }
     val selected = remember(nodes, selectedPath) {
         fun find(items: List<LottieLayerNode>): LottieLayerNode? {
             for (item in items) {
@@ -571,8 +571,8 @@ fun EditorPage(
     var scaleValue by remember(selectedPath, documentJson) { mutableStateOf(selectedPath?.let { document?.readLayerScale(it)?.toString() } ?: "100") }
     var opacityValue by remember(selectedPath, documentJson) { mutableFloatStateOf((selectedPath?.let { document?.readLayerOpacity(it) } ?: 100).toFloat()) }
     var scrubProgress by remember(documentJson) { mutableFloatStateOf(0f) }
-    val undoStack = remember(json) { mutableStateListOf<String>() }
-    val redoStack = remember(json) { mutableStateListOf<String>() }
+    val undoStack = remember(fileName) { mutableStateListOf<String>() }
+    val redoStack = remember(fileName) { mutableStateListOf<String>() }
 
     var validationMessage by remember { mutableStateOf<String?>(null) }
 
@@ -598,12 +598,12 @@ fun EditorPage(
                 (if (report.warnings.isNotEmpty()) listOf("", "هشدارها:") + report.warnings else emptyList())).joinToString("\n")
             return
         }
-        validationMessage = if (report.warnings.isEmpty()) {
-            "بررسی ساختاری موفق بود. حجم فشرده: ${report.compressedBytes} بایت."
+        val note = if (report.warnings.isEmpty()) {
+            "اعتبارسنجی TGS موفق بود؛ حجم فشرده: ${report.compressedBytes} بایت."
         } else {
-            (listOf("بررسی ساختاری موفق بود.") + report.warnings +
-                listOf("حجم فشرده: ${report.compressedBytes} بایت.")).joinToString("\n")
+            "اعتبارسنجی ساختاری موفق بود، اما ${report.warnings.size} هشدار وجود دارد."
         }
+        Toast.makeText(context, note, Toast.LENGTH_LONG).show()
         exportLauncher.launch(fileName.substringBeforeLast('.') + ".tgs")
     }
 
