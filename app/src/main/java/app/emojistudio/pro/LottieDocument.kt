@@ -65,31 +65,47 @@ class LottieDocument private constructor(private val root: JSONObject) {
         return readVectorProperty(property)?.firstOrNull()
     }
 
-    /** Changes non-keyframed solid fill colors in the selected layer and its shape groups. */
+    /** Updates fill and stroke colors in the selected layer, including color keyframes. */
     fun setStaticFillColor(path: String, argb: Int): Int {
         val layer = resolveLayer(path)
-        val red = ((argb shr 16) and 0xff) / 255.0
-        val green = ((argb shr 8) and 0xff) / 255.0
-        val blue = (argb and 0xff) / 255.0
+        val rgba = listOf(
+            ((argb shr 16) and 0xff) / 255.0,
+            ((argb shr 8) and 0xff) / 255.0,
+            (argb and 0xff) / 255.0
+        )
         var changed = 0
+
+        fun updateColorFrame(frame: JSONObject, key: String) {
+            val values = frame.optJSONArray(key) ?: return
+            if (values.length() < 3 || values.opt(0) !is Number) return
+            for (i in 0..2) values.put(i, rgba[i])
+            changed++
+        }
 
         fun walk(value: Any?) {
             when (value) {
                 is JSONObject -> {
-                    if (value.optString("ty") == "fl") {
+                    val type = value.optString("ty")
+                    if (type == "fl" || type == "st") {
                         val color = value.optJSONObject("c")
-                        val key = color?.opt("k")
-                        if (key is JSONArray && key.length() >= 3 && key.opt(0) is Number) {
-                            key.put(0, red)
-                            key.put(1, green)
-                            key.put(2, blue)
-                            changed++
+                        val property = color?.opt("k")
+                        if (property is JSONArray) {
+                            if (property.length() >= 3 && property.opt(0) is Number) {
+                                for (i in 0..2) property.put(i, rgba[i])
+                                changed++
+                            } else {
+                                for (i in 0 until property.length()) {
+                                    val frame = property.optJSONObject(i) ?: continue
+                                    updateColorFrame(frame, "s")
+                                    if (frame.has("e")) updateColorFrame(frame, "e")
+                                }
+                            }
                         }
                     }
-                    val keys = value.keys()
-                    val names = mutableListOf<String>()
-                    while (keys.hasNext()) names.add(keys.next())
-                    names.forEach { walk(value.opt(it)) }
+                    val iterator = value.keys()
+                    val keys = mutableListOf<String>()
+                    while (iterator.hasNext()) keys += iterator.next()
+                    keys.forEach { walk(value.opt(it)) }
                 }
                 is JSONArray -> for (i in 0 until value.length()) walk(value.opt(i))
             }
