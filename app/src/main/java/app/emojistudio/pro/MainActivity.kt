@@ -565,10 +565,14 @@ fun EditorPage(
     var textValue by remember(selectedPath, documentJson) {
         mutableStateOf(selectedPath?.let { document?.readTextLayer(it) }.orEmpty())
     }
-    var xValue by remember(selectedPath) { mutableStateOf("") }
-    var yValue by remember(selectedPath) { mutableStateOf("") }
-    var rotationValue by remember(selectedPath) { mutableStateOf("0") }
-    var scaleValue by remember(selectedPath) { mutableStateOf("100") }
+    var xValue by remember(selectedPath, documentJson) { mutableStateOf(selectedPath?.let { document?.readLayerPosition(it)?.first?.toString() }.orEmpty()) }
+    var yValue by remember(selectedPath, documentJson) { mutableStateOf(selectedPath?.let { document?.readLayerPosition(it)?.second?.toString() }.orEmpty()) }
+    var rotationValue by remember(selectedPath, documentJson) { mutableStateOf(selectedPath?.let { document?.readLayerRotation(it)?.toString() } ?: "0") }
+    var scaleValue by remember(selectedPath, documentJson) { mutableStateOf(selectedPath?.let { document?.readLayerScale(it)?.toString() } ?: "100") }
+    var opacityValue by remember(selectedPath, documentJson) { mutableFloatStateOf((selectedPath?.let { document?.readLayerOpacity(it) } ?: 100).toFloat()) }
+    var scrubProgress by remember(documentJson) { mutableFloatStateOf(0f) }
+    val undoStack = remember(json) { mutableStateListOf<String>() }
+    val redoStack = remember(json) { mutableStateListOf<String>() }
 
     var validationMessage by remember { mutableStateOf<String?>(null) }
 
@@ -605,15 +609,39 @@ fun EditorPage(
 
     fun applyEdit(edit: (LottieDocument) -> Unit) {
         val current = document ?: return
+        val before = current.json()
         runCatching {
             edit(current)
             val updated = current.json()
-            documentJson = updated
-            onJsonChanged(updated)
-            refreshTree++
+            if (updated != before) {
+                undoStack.add(before)
+                if (undoStack.size > 50) undoStack.removeAt(0)
+                redoStack.clear()
+                documentJson = updated
+                onJsonChanged(updated)
+                refreshTree++
+            }
         }.onFailure {
             Toast.makeText(context, it.message ?: "ویرایش انجام نشد", Toast.LENGTH_LONG).show()
         }
+    }
+
+    fun undoEdit() {
+        if (undoStack.isEmpty()) return
+        val current = documentJson ?: return
+        redoStack.add(current)
+        documentJson = undoStack.removeAt(undoStack.lastIndex)
+        onJsonChanged(documentJson!!)
+        refreshTree++
+    }
+
+    fun redoEdit() {
+        if (redoStack.isEmpty()) return
+        val current = documentJson ?: return
+        undoStack.add(current)
+        documentJson = redoStack.removeAt(redoStack.lastIndex)
+        onJsonChanged(documentJson!!)
+        refreshTree++
     }
 
     val composition by rememberLottieComposition(LottieCompositionSpec.JsonString(documentJson ?: EMPTY_JSON))
@@ -633,6 +661,12 @@ fun EditorPage(
                 Text(fileName, color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
             }
             IconButton(onClick = onImport) { Icon(Icons.Default.FileOpen, contentDescription = "Import") }
+            IconButton(onClick = { undoEdit() }, enabled = undoStack.isNotEmpty()) {
+                Icon(Icons.Default.Undo, contentDescription = "Undo")
+            }
+            IconButton(onClick = { redoEdit() }, enabled = redoStack.isNotEmpty()) {
+                Icon(Icons.Default.Redo, contentDescription = "Redo")
+            }
             IconButton(onClick = { requestExport() }, enabled = document != null) {
                 Icon(Icons.Default.Download, contentDescription = "Export TGS", tint = Purple)
             }
@@ -677,6 +711,12 @@ fun EditorPage(
                             modifier = Modifier.fillMaxWidth()
                         ) { Icon(Icons.Default.TextFields, null); Text("اعمال متن جدید") }
                     }
+                    Text("شفافیت لایه: ${opacityValue.toInt()}٪", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                    Slider(value = opacityValue, onValueChange = { opacityValue = it }, valueRange = 0f..100f)
+                    OutlinedButton(
+                        onClick = { applyEdit { it.setLayerOpacity(selected.path, opacityValue.toInt()) } },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Icon(Icons.Default.Opacity, null); Text("اعمال شفافیت") }
                     Text("رنگ لایه", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(11.dp)) {
                         listOf(0xFFFF4D8D.toInt(), 0xFF9B5CFF.toInt(), 0xFF22D3EE.toInt(), 0xFF4ADE80.toInt(), 0xFFFFC857.toInt(), 0xFFFFFFFF.toInt()).forEach { color ->
@@ -726,7 +766,7 @@ fun EditorPage(
             Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("پیش‌نمایش زنده", color = Purple, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    IconButton(onClick = onPlay, enabled = documentJson != null) {
+                    IconButton(onClick = { if (playing) scrubProgress = animatedProgress; onPlay() }, enabled = documentJson != null) {
                         Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, null)
                     }
                 }
@@ -745,7 +785,7 @@ fun EditorPage(
                     if (documentJson != null) {
                         LottieAnimation(
                             composition = composition,
-                            progress = { animatedProgress },
+                            progress = { if (playing) animatedProgress else scrubProgress },
                             modifier = Modifier.fillMaxSize().padding(12.dp)
                         )
                     } else {
@@ -758,8 +798,12 @@ fun EditorPage(
                         style = MaterialTheme.typography.labelSmall
                     )
                 }
-                Slider(value = animatedProgress, onValueChange = {}, enabled = false)
-                Text("تایم‌لاین: پیش‌نمایش و پخش انیمیشن فعال است؛ جابه‌جایی فریم به فریم هنوز در دست توسعه است.", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                Slider(
+                    value = if (playing) animatedProgress else scrubProgress,
+                    onValueChange = { scrubProgress = it },
+                    enabled = !playing && documentJson != null
+                )
+                Text(if (playing) "برای جابه‌جایی در تایم‌لاین، ابتدا پخش را متوقف کن." else "جابه‌جایی در تایم‌لاین فعال است.", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
             }
         }
 
@@ -768,6 +812,10 @@ fun EditorPage(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("درخت لایه‌ها و پوشه‌ها", color = Purple, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     Text("${nodes.size} لایه اصلی", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                    IconButton(
+                        onClick = { applyEdit { it.addRectangle("شکل جدید", 0xFF9B5CFF.toInt()) } },
+                        enabled = document != null
+                    ) { Icon(Icons.Default.AddBox, contentDescription = "افزودن شکل") }
                 }
                 if (nodes.isEmpty()) Text("لایه‌ای برای نمایش وجود ندارد.", color = Color.LightGray)
                 nodes.forEach { node -> LayerTreeRow(node, 0, selectedPath) { selectedPath = it } }
@@ -813,7 +861,7 @@ fun EditorPage(
             title = { Text("ذخیره پروژه جدید") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("قالب در بخش «قالب‌ها» نگهداری می‌شود و بعداً می‌توانی دوباره بازش کنی.")
+                    Text("پروژه در بخش «پروژه‌ها» نگهداری می‌شود و بعداً می‌توانی دوباره بازش کنی.")
                     OutlinedTextField(templateName, { templateName = it }, singleLine = true, label = { Text("نام پروژه") })
                 }
             },
